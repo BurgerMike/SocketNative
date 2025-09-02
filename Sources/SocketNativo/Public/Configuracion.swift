@@ -1,0 +1,3 @@
+import Foundation
+public struct ConfiguracionSocket: Sendable { public var baseHTTP: URL; public var ruta: String = "/socket.io/"; public var queryExtra:[URLQueryItem]=[]; public init(baseHTTP: URL){ self.baseHTTP = baseHTTP } }
+public enum URLWebSocketBuilder { public static func construir(from cfg: ConfiguracionSocket) -> URL { var c = URLComponents(url: cfg.baseHTTP, resolvingAgainstBaseURL: false)!; c.scheme = (c.scheme == "https") ? "wss":"ws"; var p = cfg.ruta; if !p.hasPrefix("/") { p = "/"+p } ; if !p.hasSuffix("/") { p += "/" } ; c.path = p; var items = cfg.queryExtra; items.append(URLQueryItem(name:"EIO", value:"4")); items.append(URLQueryItem(name:"transport", value:"websocket")); c.queryItems = items; return c.url! } }

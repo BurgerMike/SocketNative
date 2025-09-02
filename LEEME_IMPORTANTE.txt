@@ -1,0 +1,2 @@
+Coloca tu núcleo real (SocketClient, NamespaceChannel, etc.) dentro de Sources/SocketNativo/Core/.
+Este ZIP es para que puedas abrir el package y pegar tu Core.
