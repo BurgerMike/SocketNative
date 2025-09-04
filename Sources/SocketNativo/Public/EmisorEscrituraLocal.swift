@@ -1,2 +1,0 @@
-import Foundation
-final class EmisorEscrituraLocal { private var ultimaEdicion = Date.distantPast; private let enviar: @Sendable (Bool) async -> Void; init(enviar: @escaping @Sendable (Bool) async -> Void){ self.enviar=enviar } ; func editado(){ ultimaEdicion = Date(); Task { await enviar(true) }; Task { try? await Task.sleep(nanoseconds: 2_000_000_000); if Date().timeIntervalSince(self.ultimaEdicion) >= 2 { await self.enviar(false) } } } }
