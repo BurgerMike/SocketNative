@@ -1,6 +1,6 @@
 import Foundation
 
-final class WebSocketDriver: NSObject, TransportDriver, URLSessionDelegate {
+final class WebSocketDriver: NSObject, TransportDriver, URLSessionDelegate, URLSessionWebSocketDelegate {
     weak var delegate: TransportDriverDelegate?
 
     private var session: URLSession!
@@ -18,30 +18,27 @@ final class WebSocketDriver: NSObject, TransportDriver, URLSessionDelegate {
         self.security = security
         let config = URLSessionConfiguration.default
         config.httpAdditionalHeaders = headers
-        // Importante para mantener viva la conexión
         config.waitsForConnectivity = false
 
-        session = URLSession(configuration: config, delegate: self, delegateQueue: OperationQueue())
+        session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
         task = session.webSocketTask(with: url)
         closed = false
         task?.resume()
         receiveLoop()
-        // No llamamos delegateDidOpen aquí; Engine.IO enviará "0{...}" y eso triggereará el flujo.
-        // Pero sí es útil avisar cuando el WS está listo (como hace el probe):
-        delegate?.transportDidOpen(self)
+        // Notificamos apertura real en didOpenWithProtocol
     }
 
     func sendText(_ text: String) {
         guard let task else { return }
         task.send(.string(text)) { [weak self] error in
-            if let error { self?.delegate?.transport(self!, didFail: error) }
+            if let error, let self { self.delegate?.transport(self, didFail: error) }
         }
     }
 
     func sendBinary(_ data: Data) {
         guard let task else { return }
         task.send(.data(data)) { [weak self] error in
-            if let error { self?.delegate?.transport(self!, didFail: error) }
+            if let error, let self { self.delegate?.transport(self, didFail: error) }
         }
     }
 
@@ -52,8 +49,6 @@ final class WebSocketDriver: NSObject, TransportDriver, URLSessionDelegate {
         delegate?.transportDidClose(self, code: nil, reason: nil)
     }
 
-    // MARK: - Receive
-
     private func receiveLoop() {
         guard let task, !closed else { return }
         task.receive { [weak self] result in
@@ -61,7 +56,6 @@ final class WebSocketDriver: NSObject, TransportDriver, URLSessionDelegate {
             switch result {
             case .failure(let error):
                 self.delegate?.transport(self, didFail: error)
-
             case .success(let message):
                 switch message {
                 case .string(let text):
@@ -71,14 +65,12 @@ final class WebSocketDriver: NSObject, TransportDriver, URLSessionDelegate {
                 @unknown default:
                     break
                 }
-                // Seguir recibiendo
                 self.receiveLoop()
             }
         }
     }
 
     // MARK: - TLS pinning / trust
-
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         if let security {
@@ -87,6 +79,21 @@ final class WebSocketDriver: NSObject, TransportDriver, URLSessionDelegate {
         } else {
             completionHandler(.performDefaultHandling, nil)
         }
+    }
+
+    // MARK: - WebSocket delegate
+    func urlSession(_ session: URLSession,
+                    webSocketTask: URLSessionWebSocketTask,
+                    didOpenWithProtocol protocol: String?) {
+        delegate?.transportDidOpen(self)
+    }
+
+    func urlSession(_ session: URLSession,
+                    webSocketTask: URLSessionWebSocketTask,
+                    didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+                    reason: Data?) {
+        closed = true
+        delegate?.transportDidClose(self, code: Int(closeCode.rawValue), reason: reason)
     }
 }
 

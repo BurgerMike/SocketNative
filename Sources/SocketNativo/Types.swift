@@ -39,7 +39,7 @@ public struct ChatConfig {
     public var logger: Logging?
 
     /// Nuevo: payload opcional que se envía en el CONNECT de Socket.IO (40<nsp>,{...})
-    public var connectPayloadProvider: (() async -> [String:Any]?)?
+    public var connectPayloadProvider: (@Sendable () async -> [String:Any]?)?
 
     public init(baseURL: URL,
                 path: String,
@@ -57,7 +57,7 @@ public struct ChatConfig {
                 middlewares: [EventMiddleware] = [],
                 store: KeyValueStoring? = nil,
                 logger: Logging? = nil,
-                connectPayloadProvider: (() async -> [String:Any]?)? = nil) {
+                connectPayloadProvider: (@Sendable () async -> [String:Any]?)? = nil) {
         self.baseURL = baseURL; self.path = path; self.namespace = namespace
         self.query = query; self.headers = headers; self.preferTransports = preferTransports
         self.engineIO = engineIO; self.reconnect = reconnect; self.ack = ack
@@ -68,7 +68,7 @@ public struct ChatConfig {
     }
 }
 
-struct AckPending { let id: Int; let deadline: Date; let cb: (Any?) -> Void }
+struct AckPending { let id: Int; let deadline: Date; let cb: @Sendable (Any?) -> Void }
 
 enum EIOType: Character { case open="0", close="1", ping="2", pong="3", message="4", upgrade="5", noop="6" }
 enum SIOType: Character { case connect="0", disconnect="1", event="2", ack="3", error="4", binaryEvent="5", binaryAck="6" }

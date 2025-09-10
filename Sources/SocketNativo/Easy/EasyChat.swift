@@ -2,6 +2,7 @@ import Foundation
 
 /// Fachada muy simple para conectar y trabajar con un namespace.
 /// Entra y sale por `ChatClient`, pero sin exponer su complejidad.
+@MainActor
 public final class EasyChat {
     public let client: ChatClient
     public let namespace: String
@@ -58,12 +59,12 @@ public final class EasyChat {
     // MARK: - Listeners
 
     /// onAny global
-    public func onAny(_ cb: @escaping (String, Any?) -> Void) {
+    public func onAny(_ cb: @escaping @Sendable (String, Any?) -> Void) {
         client.onAny = cb
     }
 
     /// on por evento (namespace actual)
-    public func on(_ event: String, _ cb: @escaping (Any?) -> Void) {
+    public func on(_ event: String, _ cb: @escaping @Sendable (Any?) -> Void) {
         room.on(event) { payload, _ in cb(payload) }
     }
 
@@ -80,7 +81,7 @@ public final class EasyChat {
         client.emit(event, payload, in: namespace, ack: nil)
     }
 
-    public func emitJSON<T: Encodable>(_ event: String, _ json: T, ack: ((Any?) -> Void)? = nil) {
+    public func emitJSON<T: Encodable>(_ event: String, _ json: T, ack: (@Sendable (Any?) -> Void)? = nil) {
         client.emit(event, json: json, ack: ack)
     }
 }
@@ -88,10 +89,10 @@ public final class EasyChat {
 // MARK: - Alias en español (opcionales)
 public typealias ChatFacil = EasyChat
 public extension EasyChat {
-    func enCualquierEvento(_ cb: @escaping (String, Any?) -> Void) { onAny(cb) }
-    func en(_ evento: String, _ cb: @escaping (Any?) -> Void) { on(evento, cb) }
+    func enCualquierEvento(_ cb: @escaping @Sendable (String, Any?) -> Void) { onAny(cb) }
+    func en(_ evento: String, _ cb: @escaping @Sendable (Any?) -> Void) { on(evento, cb) }
     func emitir(_ evento: String, _ payload: Any?) { emit(evento, payload) }
-    func emitir<T: Encodable>(_ evento: String, json: T, acuse: ((Any?) -> Void)? = nil) {
+    func emitir<T: Encodable>(_ evento: String, json: T, acuse: (@Sendable (Any?) -> Void)? = nil) {
         emitJSON(evento, json, ack: acuse)
     }
 }

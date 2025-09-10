@@ -1,22 +1,24 @@
 import Foundation
 
+@MainActor
 public final class Namespace {
-    public typealias Listener = (Any?, ((Any?) -> Void)?) -> Void
+    public typealias Listener = @Sendable (Any?, (@Sendable (Any?) -> Void)?) -> Void
     public let name: String
     unowned let owner: ChatClient
     private var listeners: [String: [Listener]] = [:]
     init(name: String, owner: ChatClient) { self.name = name; self.owner = owner }
     public func on(_ event: String, _ cb: @escaping Listener) { listeners[event, default: []].append(cb) }
     public func off(_ event: String) { listeners.removeValue(forKey: event) }
-    func dispatch(event: String, payload: Any?, ack: ((Any?) -> Void)?) {
+    func dispatch(event: String, payload: Any?, ack: (@Sendable (Any?) -> Void)?) {
         if let arr = listeners[event] { for cb in arr { cb(payload, ack) } }
     }
     // Emit específico del namespace
-    public func emit(_ event: String, _ payload: Any?, ack: ((Any?) -> Void)? = nil) {
+    public func emit(_ event: String, _ payload: Any?, ack: (@Sendable (Any?) -> Void)? = nil) {
         owner.emit(event, payload, in: name, ack: ack)
     }
 }
 
+@MainActor
 public final class ChatClient: NSObject {
     private var cfg: ChatConfig!
     private var logger: Logger!
@@ -43,12 +45,12 @@ public final class ChatClient: NSObject {
 
     private var namespaces: [String: Namespace] = [:]
     private var stickyJoins: [(String, Any?)] = []
-    private var offlineQ: [(String, String, Any?, ((Any?) -> Void)?)] = [] // (event, nsp, payload, ack)
+    private var offlineQ: [(String, String, Any?, (@Sendable (Any?) -> Void)?)] = [] // (event, nsp, payload, ack)
 
     private var binAssembler = BinaryAssembler()
 
-    public var onLog: ((String) -> Void)?
-    public var onAny: ((String, Any?) -> Void)?
+    public var onLog: (@Sendable (String) -> Void)?
+    public var onAny: (@Sendable (String, Any?) -> Void)?
 
     public override init() { super.init() }
 
@@ -64,8 +66,12 @@ public final class ChatClient: NSObject {
         self.logger = Logger(cfg.logLevel, custom: cfg.logger)
         self.reach = Reachability()
         self.reach?.onChange = { [weak self] ok in
-            guard let self else { return }
-            if ok, !(self.driver != nil && self.connected) { Task { try? await self.start() } }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if ok, !(self.driver != nil && self.connected) {
+                    try? await self.start()
+                }
+            }
         }
         try await start()
     }
@@ -112,9 +118,9 @@ public final class ChatClient: NSObject {
     // MARK: - Emit API
 
     public func emit(_ event: String, _ payload: Any?) { emit(event, payload, in: cfg.namespace, ack: nil) }
-    public func emit<T: Encodable>(_ event: String, json: T, ack: ((Any?) -> Void)? = nil) { emit(event, AnyEncodable(json), in: cfg.namespace, ack: ack) }
+    public func emit<T: Encodable>(_ event: String, json: T, ack: (@Sendable (Any?) -> Void)? = nil) { emit(event, AnyEncodable(json), in: cfg.namespace, ack: ack) }
 
-    public func emit(_ event: String, _ payload: Any?, in namespace: String, ack: ((Any?) -> Void)? = nil) {
+    public func emit(_ event: String, _ payload: Any?, in namespace: String, ack: (@Sendable (Any?) -> Void)? = nil) {
         var ev = event; var pl = payload
         for m in cfg.middlewares { if let out = m.willEmit(event: ev, payload: pl) { ev = out.0; pl = out.1 } else { return } }
 
@@ -164,19 +170,42 @@ public final class ChatClient: NSObject {
         if attempt > cfg.reconnect.maxAttempts { return }
         delay = attempt == 1 ? cfg.reconnect.initial : min(cfg.reconnect.max, delay * cfg.reconnect.factor)
         let jitter = delay * cfg.reconnect.jitter; let realDelay = max(0.05, delay + Double.random(in: -jitter...jitter))
-        Task { [weak self] in try? await Task.sleep(nanoseconds: UInt64(realDelay * 1_000_000_000)); guard let self else { return }; try? await self.start() }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(realDelay * 1_000_000_000))
+            guard let self else { return }
+            try? await self.start()
+        }
     }
     private func resetReconnect() { reconnecting = false; attempt = 0; delay = cfg.reconnect.initial }
 
     private func schedulePing() {
-        Task { [weak self] in guard let self else { return }; await pingTimer.cancel()
-            await pingTimer.schedule(every: max(5, pingInterval)) { [weak self] in self?.driver?.sendText(String(EIOType.ping.rawValue)) } }
+        Task { [weak self] in
+            guard let self else { return }
+            await self.pingTimer.cancel()
+            await self.pingTimer.schedule(every: max(5, self.pingInterval)) {
+                Task { @MainActor [weak self] in
+                    self?.driver?.sendText(String(EIOType.ping.rawValue))
+                }
+            }
+        }
     }
     private func scheduleAckSweep() {
-        Task { [weak self] in guard let self else { return }; await ackTimer.cancel()
-            await ackTimer.schedule(every: 1.0) { [weak self] in guard let self else { return }
-                let now = Date(); let expired = self.acks.filter { $0.value.deadline < now }.map { $0.key }
-                for id in expired { if let p = self.acks.removeValue(forKey: id) { p.cb(["ackTimeout": true]) } } } }
+        Task { [weak self] in
+            guard let self else { return }
+            await self.ackTimer.cancel()
+            await self.ackTimer.schedule(every: 1.0) {
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    let now = Date()
+                    let expired = self.acks.filter { $0.value.deadline < now }.map { $0.key }
+                    for id in expired {
+                        if let p = self.acks.removeValue(forKey: id) {
+                            p.cb(["ackTimeout": true])
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Inbound handling
@@ -195,7 +224,7 @@ public final class ChatClient: NSObject {
                 // CONNECT de Socket.IO con payload opcional (sin await en contexto sync)
                 let nsp = cfg.namespace
                 let provider = cfg.connectPayloadProvider
-                Task { [weak self] in
+                Task { @MainActor [weak self] in
                     guard let self else { return }
                     var s = "40"
                     if nsp != "/" { s += nsp + "," }
@@ -208,7 +237,9 @@ public final class ChatClient: NSObject {
                 }
 
                 if (driver is PollingDriver), (cfg.preferTransports.contains(.websocket)), (open.upgrades?.contains("websocket") == true), let sid {
-                    Task { try? await self.startWebSocketProbe(withSID: sid) }
+                    Task { @MainActor [weak self] in
+                        try? await self?.startWebSocketProbe(withSID: sid)
+                    }
                 }
             }
         case .ping: driver?.sendText(String(EIOType.pong.rawValue))
@@ -264,19 +295,24 @@ public final class ChatClient: NSObject {
                 for m in cfg.middlewares { if let out = m.didReceive(event: transformed.0, payload: transformed.1) { transformed = out } else { return } }
                 onAny?(transformed.0, transformed.1)
                 let ns = of(nsp)
-                var ackCB: ((Any?) -> Void)? = nil
+                var ackCB: (@Sendable (Any?) -> Void)? = nil
                 if !idStr.isEmpty, let id = Int(idStr) {
                     ackCB = { resp in
-                        // Si resp contiene binarios, responder con 46 (binaryAck)
-                        if let bin = BinaryEncoder.encodeAck(args: (resp ?? [])) {
-                            var head = "46" + (nsp != "/" ? nsp + "," : "") + String(id)
-                            head += bin.header + bin.arrayJSON
-                            self.driver?.sendText(head)
-                            for d in bin.attachments { self.driver?.sendBinary(d) }
-                        } else {
-                            let head = "43" + (nsp != "/" ? nsp + "," : "") + String(id)
-                            let body: String = { if let s = JSON.stringify(resp) { return s.hasPrefix("[") ? s : "[" + s + "]" } else { return "[]" } }()
-                            self.driver?.sendText(head + body)
+                        Task { @MainActor [weak self] in
+                            guard let self else { return }
+                            if let bin = BinaryEncoder.encodeAck(args: (resp ?? [])) {
+                                var head = "46" + (nsp != "/" ? nsp + "," : "") + String(id)
+                                head += bin.header + bin.arrayJSON
+                                self.driver?.sendText(head)
+                                for d in bin.attachments { self.driver?.sendBinary(d) }
+                            } else {
+                                let head = "43" + (nsp != "/" ? nsp + "," : "") + String(id)
+                                let body: String = {
+                                    if let s = JSON.stringify(resp) { return s.hasPrefix("[") ? s : "[" + s + "]" }
+                                    else { return "[]" }
+                                }()
+                                self.driver?.sendText(head + body)
+                            }
                         }
                     }
                 }
@@ -306,9 +342,12 @@ public final class ChatClient: NSObject {
             binAssembler.startPacket(isAck: (siotype == .binaryAck), nsp: nsp2, id: idLocal, jsonArray: arr)
 
         case .error:
-            Task {
-                let shouldRetry = await cfg.authProvider?.didReceiveAuthError(code: nil, message: jsonPart) ?? false
-                if shouldRetry { self.disconnect(); try? await self.start() }
+            Task { @MainActor [weak self] in
+                let shouldRetry = await self?.cfg.authProvider?.didReceiveAuthError(code: nil, message: jsonPart) ?? false
+                if shouldRetry {
+                    self?.disconnect()
+                    try? await self?.start()
+                }
             }
         default: break
         }

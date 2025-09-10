@@ -15,7 +15,7 @@ final class PollingDriver: NSObject, TransportDriver, URLSessionDelegate {
     func connect(url: URL, headers: [String:String], security: SecurityEvaluating?) {
         self.baseURL = url; self.headers = headers; self.security = security
         let conf = URLSessionConfiguration.default; conf.httpAdditionalHeaders = headers
-        session = URLSession(configuration: conf, delegate: self, delegateQueue: OperationQueue())
+        session = URLSession(configuration: conf, delegate: self, delegateQueue: .main)
         closed = false; poll()
     }
 
