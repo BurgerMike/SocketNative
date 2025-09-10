@@ -28,7 +28,7 @@ public final class DefaultSecurityPolicy: NSObject, SecurityEvaluating {
             return (.useCredential, URLCredential(trust: trust))
 
         case .certificates(let pinned):
-            if let leaf = SecTrustGetCertificateAtIndex(trust, 0) {
+            if let leaf = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first {
                 let data = SecCertificateCopyData(leaf) as Data
                 if pinned.contains(data) {
                     return (.useCredential, URLCredential(trust: trust))
@@ -37,7 +37,7 @@ public final class DefaultSecurityPolicy: NSObject, SecurityEvaluating {
             return (.cancelAuthenticationChallenge, nil)
 
         case .spki(let pinnedHashes):
-            if let leaf = SecTrustGetCertificateAtIndex(trust, 0),
+            if let leaf = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first,
                let spki = DefaultSecurityPolicy.spkiHash(for: leaf),
                pinnedHashes.contains(spki) {
                 return (.useCredential, URLCredential(trust: trust))

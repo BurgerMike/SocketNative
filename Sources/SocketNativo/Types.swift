@@ -38,6 +38,9 @@ public struct ChatConfig {
     public var store: KeyValueStoring?
     public var logger: Logging?
 
+    /// Nuevo: payload opcional que se envía en el CONNECT de Socket.IO (40<nsp>,{...})
+    public var connectPayloadProvider: (() async -> [String:Any]?)?
+
     public init(baseURL: URL,
                 path: String,
                 namespace: String = "/",
@@ -53,13 +56,15 @@ public struct ChatConfig {
                 authProvider: AuthProviding? = nil,
                 middlewares: [EventMiddleware] = [],
                 store: KeyValueStoring? = nil,
-                logger: Logging? = nil) {
+                logger: Logging? = nil,
+                connectPayloadProvider: (() async -> [String:Any]?)? = nil) {
         self.baseURL = baseURL; self.path = path; self.namespace = namespace
         self.query = query; self.headers = headers; self.preferTransports = preferTransports
         self.engineIO = engineIO; self.reconnect = reconnect; self.ack = ack
         self.offlineQueue = offlineQueue; self.logLevel = logLevel
         self.security = security; self.authProvider = authProvider
         self.middlewares = middlewares; self.store = store; self.logger = logger
+        self.connectPayloadProvider = connectPayloadProvider
     }
 }
 

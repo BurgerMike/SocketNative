@@ -12,22 +12,24 @@ struct BinaryAssembler {
     }
     private(set) var queue: [Pending] = []
 
-    mutating func startPacket(isAck: Bool, nsp: String, id: Int?, header: String, jsonArray: [Any]) -> Pending {
+    mutating func startPacket(isAck: Bool, nsp: String, id: Int?, jsonArray: [Any]) {
         let expected = countPlaceholders(in: jsonArray)
         let event = (jsonArray.first as? String) ?? ""
         let args = Array(jsonArray.dropFirst())
         let p = Pending(isAck: isAck, nsp: nsp, id: id, event: event, args: args, expected: expected)
-        queue.append(p); return p
+        queue.append(p)
     }
 
-    mutating func appendBinary(_ data: Data) -> (String, [Any])? {
+    /// Añade un binario y, si está completo, devuelve el Pending completo.
+    mutating func appendBinary(_ data: Data) -> Pending? {
         guard !queue.isEmpty else { return nil }
         queue[0].attachments.append(data)
         if queue[0].attachments.count == queue[0].expected {
             var args = queue[0].args
             for i in 0..<args.count { args[i] = replacePlaceholders(in: args[i], with: queue[0].attachments) }
-            let ev = queue[0].event; queue.removeFirst()
-            return (ev, args)
+            let done = Pending(isAck: queue[0].isAck, nsp: queue[0].nsp, id: queue[0].id, event: queue[0].event, args: args, expected: queue[0].expected, attachments: queue[0].attachments)
+            queue.removeFirst()
+            return done
         }
         return nil
     }
@@ -48,11 +50,24 @@ struct BinaryAssembler {
 }
 
 struct BinaryEncoder {
+    /// Para eventos: arma [event, ...args] y devuelve header + JSON + adjuntos
     static func encode(event: String, args: Any) -> (header: String, arrayJSON: String, attachments: [Data])? {
         let (replaced, attachments) = extractDataAndReplace(value: args, collected: [])
         guard !attachments.isEmpty else { return nil }
         let array: [Any] = [event, replaced]
         let jsonData = try! JSONSerialization.data(withJSONObject: array, options: [])
+        let jsonStr = String(data: jsonData, encoding: .utf8)!
+        let header = String(attachments.count) + "-"
+        return (header, jsonStr, attachments)
+    }
+
+    /// Para ACK binario: arma solo los args del ACK (un array), no incluye nombre de evento.
+    static func encodeAck(args: Any) -> (header: String, arrayJSON: String, attachments: [Data])? {
+        let (replaced, attachments) = extractDataAndReplace(value: args, collected: [])
+        guard !attachments.isEmpty else { return nil }
+        // Si 'replaced' no es array, lo envolvemos en array
+        let ackArray: Any = (replaced as? [Any]) ?? [replaced]
+        let jsonData = try! JSONSerialization.data(withJSONObject: ackArray, options: [])
         let jsonStr = String(data: jsonData, encoding: .utf8)!
         let header = String(attachments.count) + "-"
         return (header, jsonStr, attachments)

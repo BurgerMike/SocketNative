@@ -1,10 +1,3 @@
-//
-//  EasyCall.swift
-//  SocketNativo
-//
-//  Created by Miguel Carlos Elizondo Martinez on 09/09/25.
-//
-
 import Foundation
 
 /// Fachada muy simple para conectar y trabajar con un namespace.
@@ -24,7 +17,8 @@ public final class EasyChat {
         headers: [String:String] = [:],
         query: [String:String] = [:],
         logLevel: LogLevel = .info,
-        security: SecurityEvaluating? = nil
+        security: SecurityEvaluating? = nil,
+        connectPayload: (() async -> [String:Any]?)? = nil
     ) {
         self.client = ChatClient()
         self.namespace = namespace
@@ -44,7 +38,8 @@ public final class EasyChat {
             authProvider: nil,
             middlewares: [],
             store: nil,
-            logger: nil
+            logger: nil,
+            connectPayloadProvider: connectPayload
         )
     }
 
@@ -82,7 +77,7 @@ public final class EasyChat {
     // MARK: - Emit
 
     public func emit(_ event: String, _ payload: Any?) {
-        client.emit(event, payload)
+        client.emit(event, payload, in: namespace, ack: nil)
     }
 
     public func emitJSON<T: Encodable>(_ event: String, _ json: T, ack: ((Any?) -> Void)? = nil) {
