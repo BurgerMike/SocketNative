@@ -1,86 +1,98 @@
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
+import Network
 
-extension URL {
-    func toWS() -> URL {
-        var c = URLComponents(url: self, resolvingAgainstBaseURL: false)!
-        c.scheme = (c.scheme == "https") ? "wss" : "ws"
-        return c.url!
-    }
-}
-
-func sleepSeconds(_ s: TimeInterval) async {
-    try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000))
-}
-
-// Engine.IO polling framing helpers
-struct PollPacket { let type: String; let data: String }
-func parsePollingPayload(_ s: String) -> [PollPacket] {
-    var packets: [PollPacket] = []
-    var idx = s.startIndex
-    while idx < s.endIndex {
-        var lenStr = ""
-        while idx < s.endIndex, s[idx].isNumber { lenStr.append(s[idx]); idx = s.index(after: idx) }
-        guard idx < s.endIndex, s[idx] == ":", let len = Int(lenStr) else { break }
-        idx = s.index(after: idx)
-        let end = s.index(idx, offsetBy: len, limitedBy: s.endIndex) ?? s.endIndex
-        let packet = String(s[idx..<end])
-        if let t = packet.first { packets.append(.init(type: String(t), data: String(packet.dropFirst()))) }
-        idx = end
-    }
-    if packets.isEmpty, let first = s.first { packets.append(.init(type: String(first), data: String(s.dropFirst()))) }
-    return packets
-}
-func makePollingBody(_ frames: [String]) -> Data {
-    let joined = frames.map { "\($0.count):\($0)" }.joined()
-    return Data(joined.utf8)
-}
-
-// Split "[/ns,]..." -> (ns, rest)
-func splitNSAndRest(_ slice: Substring) -> (String, String) {
-    if slice.first == "/" {
-        if let comma = slice.firstIndex(of: ",") {
-            return (String(slice[..<comma]), String(slice[slice.index(after: comma)...]))
+final class Logger {
+    let level: LogLevel
+    let custom: Logging?
+    init(_ level: LogLevel, custom: Logging? = nil) { self.level = level; self.custom = custom }
+    func emit(_ lvl: LogLevel, _ msg: @autoclosure () -> String) {
+        custom?.log(lvl, msg())
+        if lvl.rawValue <= level.rawValue {
+            switch lvl {
+            case .error: print("[SocketNativo][E] \(msg())")
+            case .info:  print("[SocketNativo][I] \(msg())")
+            case .debug: print("[SocketNativo][D] \(msg())")
+            default: break
+            }
         }
-        return (String(slice), "")
     }
-    if slice.first == "," { return ("/", String(slice.dropFirst())) }
-    return ("/", String(slice))
+    func error(_ msg: @autoclosure () -> String) { emit(.error, msg()) }
+    func info (_ msg: @autoclosure () -> String) { emit(.info,  msg()) }
+    func debug(_ msg: @autoclosure () -> String) { emit(.debug, msg()) }
 }
 
-// Extract numeric id when exists before JSON
-func splitIDAndJSON(_ s: String) -> (Int?, String) {
-    var idStr = ""
-    var i = s.startIndex
-    while i < s.endIndex, s[i].isNumber { idStr.append(s[i]); i = s.index(after: i) }
-    let id = Int(idStr)
-    return (id, String(s[i...]))
-}
+enum JSON {
+    static let enc: JSONEncoder = { let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; return e }()
+    static let dec: JSONDecoder = { let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; return d }()
 
-// Replace placeholders {"_placeholder":true,"num":N} with attachments
-func injectAttachments(jsonAny: Any, blobs: [Data]) -> Any {
-    if let dict = jsonAny as? [String: Any], let ph = dict["_placeholder"] as? Bool, ph, let num = dict["num"] as? Int, num < blobs.count {
-        return blobs[num]
-    }
-    if let dict = jsonAny as? [String: Any] {
-        var out: [String: Any] = [:]
-        for (k,v) in dict { out[k] = injectAttachments(jsonAny: v, blobs: blobs) }
-        return out
-    }
-    if let arr = jsonAny as? [Any] { return arr.map { injectAttachments(jsonAny: $0, blobs: blobs) } }
-    return jsonAny
-}
-
-// Walk JSON and replace Data with placeholders; returns (jsonWithPH, count)
-func makePlaceholders(json: Any, attachments: [Data]) -> (Any, Int) {
-    var idx = 0
-    func walk(_ any: Any) -> Any {
-        if any is Data { let i = idx; idx += 1; return ["_placeholder": true, "num": i] }
-        if let d = any as? [String: Any] {
-            var out: [String: Any] = [:]; d.forEach { out[$0] = walk($1) }; return out
+    static func stringify(_ value: Any?) -> String? {
+        if value == nil { return "null" }
+        if let s = value as? String {
+            return try? String(data: enc.encode([s]), encoding: .utf8).flatMap { String($0.dropFirst().dropLast()) }
         }
-        if let a = any as? [Any] { return a.map { walk($0) } }
-        return any
+        if let d = value as? Data { return String(data: d, encoding: .utf8) }
+        if let e = value as? Encodable {
+            if let val = e as? AnyEncodable {
+                return String(data: (try? enc.encode(val)) ?? Data("null".utf8), encoding: .utf8)
+            }
+        }
+        if let obj = value, JSONSerialization.isValidJSONObject(obj) {
+            return String(data: try! JSONSerialization.data(withJSONObject: obj, options: []), encoding: .utf8)
+        }
+        return nil
     }
-    let replaced = walk(json)
-    return (replaced, attachments.count)
 }
+
+public struct AnyEncodable: Encodable {
+    private let _encode: (Encoder) throws -> Void
+    public init<T: Encodable>(_ wrapped: T) {
+        self._encode = wrapped.encode
+    }
+    public func encode(to encoder: Encoder) throws {
+        try _encode(encoder)
+    }
+}
+
+actor AsyncTimer {
+    private var task: Task<Void, Never>?
+
+    func schedule(every seconds: TimeInterval, _ block: @escaping @Sendable () -> Void) {
+        cancel()
+        task = Task.detached { [seconds] in
+            let ns = UInt64(seconds * 1_000_000_000)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: ns)
+                if Task.isCancelled { break }
+                block()
+            }
+        }
+    }
+
+    func after(_ seconds: TimeInterval, _ block: @escaping @Sendable () -> Void) {
+        cancel()
+        task = Task.detached {
+            let ns = UInt64(seconds * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: ns)
+            if !Task.isCancelled { block() }
+        }
+    }
+    func cancel() { task?.cancel(); task = nil }
+}
+
+final class Reachability {
+    private let monitor = NWPathMonitor()
+    private let queue = DispatchQueue(label: "SocketNativo.Reachability")
+    var onChange: (@Sendable (Bool) -> Void)?
+    init() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            self?.onChange?(path.status == .satisfied)
+        }
+        monitor.start(queue: queue)
+    }
+    deinit { monitor.cancel() }
+}
+
+extension Reachability: @unchecked Sendable {}
